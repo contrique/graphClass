@@ -39,6 +39,7 @@ class MessagesPage(BaseVkAuthorisedPage):
 
 class FriendsPage(BaseVkAuthorisedPage):
     page_path = '/im'
+    asdasdas = ''
 
 
 class GroupsPage(BaseVkAuthorisedPage):
