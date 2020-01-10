@@ -1,4 +1,3 @@
-from libs.ui_interface.base import BasePage
 from .base import BaseContainerElement, BaseElement, BasePage, __DEFAULT__
 from selenium.webdriver.common.keys import Keys
 import typing
@@ -11,42 +10,32 @@ class Button(BaseElement):
         el.click()
 
 
-# scope chain
 class NavigateButton(Button):
-    _next_element: typing.Union[typing.Type[BasePage], typing.Type[BaseElement]] = None
+    next: typing.Union[typing.Type[BasePage], typing.Type[BaseElement]] = None
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        if self._next_element is None:
-            raise ValueError(f"{self.__class__} NavigateButton requires _next_element to be defined")
-        if isinstance(self._next_element, type):
-            if not issubclass(self._next_element, (BasePage, BaseElement)):
-                raise ValueError(f"{self.__class__} NavigateButton _next_element could be PageClass or BaseElement instance")
-        elif not isinstance(self._next_element, BaseElement):
-            raise ValueError(f"{self.__class__} NavigateButton _next_element could be PageClass or BaseElement instance")
+        if self.next is None:
+            raise ValueError(f"{self.__class__} NavigateButton requires attribute 'next' to be defined")
+        if isinstance(self.next, type):
+            if not issubclass(self.next, (BasePage, BaseElement)):
+                raise ValueError(f"{self.__class__} NavigateButton attribute 'next' could be PageClass or BaseElement instance")
+        elif not isinstance(self.next, BaseElement):
+            raise ValueError(f"{self.__class__} NavigateButton attribute 'next' could be PageClass or BaseElement instance")
 
     def click(self):
         super().click()
-        if isinstance(self._next_element, type):
-            if issubclass(self._next_element, BasePage):
-                next_element = self._next_element(self._get_page().driver)
-            elif issubclass(self._next_element, BaseElement):
-                next_element = self._next_element()
-                next_element = next_element._instantiate(self._get_page(), parent_container=self._get_page())
-        elif isinstance(self._next_element, BaseElement):
-            next_element = self._next_element._instantiate(self._get_page(), parent_container=self._get_page())
-        next_element.wait_till_is_visible()
-        return next_element
+        return self._wait_and_instantiate(self.next)
 
 
 class Input(BaseElement):
     value = None
 
-    def set_text(self, value):
+    def set(self, value, options: dict = None):
         el = self._wait_element()
         el.send_keys(value)
 
-    def get_text(self):
+    def get(self):
         if self.value is not None:
             return self.value
 

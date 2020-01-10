@@ -1,17 +1,17 @@
+import time
+from .action_chain import ActionChain
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import time
 from selenium.webdriver.common.by import By
-
-# import typing
+from .forward_reference import FwdReference as FwdReferenceBase
 
 
 class __DEFAULT__:
     pass
 
 
-class FwdReference:
+class FwdReference(FwdReferenceBase):
     target_class_name = None
     args = None
     kwargs = None
@@ -19,50 +19,50 @@ class FwdReference:
     owner = None
     _unresolved_references = {}
 
-    def __init__(self, class_name: str, *args, **kwargs):
-        bucket = self._unresolved_references.get(class_name, None)
-        if bucket is None:
-            bucket = self._unresolved_references[class_name] = []
-        bucket.append(self)
-        self.target_class_name = class_name
-        self.args = args
-        self.kwargs = kwargs
+    def resolve(self, target_class):
+        if issubclass(self.owner, BaseContainer):
+            self.owner._elements[self.name] = target_class
+        else:
+            setattr(self.owner, self.name, target_class)
 
-    @classmethod
-    def resolve(cls, target_class):
-        bucket = cls._unresolved_references.get(target_class.__name__, __DEFAULT__)
-        if bucket is __DEFAULT__:
-            return
-        for reference in bucket:
-            #instance = target_class(*reference.args, **reference.kwargs)
-            if issubclass(reference.owner, BaseContainer):
-                reference.owner._elements[reference.name] = target_class
+
+class CommonBaseClass:
+    def _get_full_name(self):
+        element = self
+        full_name = []
+        while element is not None:
+            name = getattr(element, '_name', None)
+            if not name:
+                name = element.__class__.__name__
+            full_name.insert(0, name)
+            element = getattr(element, '_parent_container', None)
+        return '.'.join(full_name)
+
+    def _wait_and_instantiate(self, next_element):
+        if isinstance(next_element, type):
+            if issubclass(next_element, BasePage):
+                next_element = next_element(self._get_page().driver)
+            elif issubclass(next_element, BaseElement):
+                next_element = next_element()
+                next_element = next_element._instantiate(self._get_page(), parent_container=self._get_page())
             else:
-                setattr(reference.owner, reference.name, target_class)
-        del cls._unresolved_references[target_class.__name__]
-
-    def clone(self, new_target_class):
-        instance = self.__class__(class_name=self.target_class_name, *self.args, **self.kwargs)
-        instance.__set_name__(new_target_class, self.name)
-        return instance
-
-    def __get__(self, instance, owner):
-        raise RuntimeError(
-             f"{self.owner}.{self.name}: Can't resolve forward reference for {self.target_class_name}")
-
-    def __set_name__(self, owner, name):
-        self.owner = owner
-        self.name = name
+                raise RuntimeError(f"{self._get_full_name()} Unexpected next_element value")
+        elif isinstance(next_element, BaseElement):
+            next_element = next_element._instantiate(self._get_page(), parent_container=self._get_page())
+        else:
+            raise RuntimeError(f"{self._get_full_name()} Unexpected next_element value")
+        next_element.wait_till_is_visible()
+        return next_element
 
 
-class BaseElement:
+class BaseElement(CommonBaseClass):
     _locator = None
     _name: str = None
     _parent_container: 'BaseContainer' = None
     _page: 'BasePage' = None
 
     def __init_subclass__(cls, **kwargs):
-        FwdReference.resolve(cls)
+        FwdReference.resolve_all_references_to_class(cls)
         super().__init_subclass__(**kwargs)
 
     def _get_page(self):
@@ -71,8 +71,9 @@ class BaseElement:
     def _wait_element(self, timeout=5):
         if self._locator is None:
             raise ValueError(f"Class '{self.__class__.__name__}' should have 'locator' attribute defined")
-        return WebDriverWait(self._page.driver, timeout).until(EC.presence_of_element_located((By.XPATH, self._get_full_xpath())),
-                                                               message=f"Can't find element {self._get_full_name()} by locator {self._get_full_xpath()}")
+        return WebDriverWait(self._page.driver, timeout).until(
+            EC.presence_of_element_located((By.XPATH, self._get_full_xpath())),
+            message=f"Can't find element {self._get_full_name()} by locator {self._get_full_xpath()}")
 
     def _wait_elements(self, timeout=5):
         if self._locator is None:
@@ -95,17 +96,6 @@ class BaseElement:
                 full_xpath.insert(0, locator)
             element = getattr(element, '_parent_container', None)
         return ''.join(full_xpath)
-
-    def _get_full_name(self):
-        element = self
-        full_name = []
-        while element is not None:
-            name = getattr(element, '_name', None)
-            if not name:
-                name = element.__class__.__name__
-            full_name.insert(0, name)
-            element = getattr(element, '_parent_container', None)
-        return '.'.join(full_name)
 
     def is_visible(self):
         return not self._is_not_visible()
@@ -144,12 +134,12 @@ class BaseElement:
                 raise ValueError("%s Unknown __init__ parameter - %s" % (self.__class__, n))
 
 
-class BaseContainer:
+class BaseContainer(CommonBaseClass):
     _elements = None
     _name: str = None
 
     def __init_subclass__(cls, **kwargs):
-        FwdReference.resolve(cls)
+        FwdReference.resolve_all_references_to_class(cls)
         cls._class_get_all_elements()
         super().__init_subclass__(**kwargs)
 
@@ -192,7 +182,10 @@ class BaseContainer:
         if element is __DEFAULT__:
             raise AttributeError(f"{self.__class__} has no attribute {item}")
         if isinstance(element, type):
-            instance = element(page=self._get_page(), parent_container=self, name=item)
+            if issubclass(element, BasePage):
+                instance = element(driver=self._get_page().driver)
+            else:
+                instance = element(page=self._get_page(), parent_container=self, name=item)
             setattr(self, item, instance)
             return instance
         instance = element._instantiate(self._get_page(), parent_container=self, name=item)
@@ -227,16 +220,37 @@ class BaseContainer:
             raise TimeoutError(f"{self.__class__} element {not_visible_element} is not visible")
         raise TimeoutError(f"{self.__class__} is not visible")
 
-    def _get_full_name(self):
-        element = self
-        full_name = []
-        while element is not None:
-            name = getattr(element, '_name', None)
-            if not name:
-                name = element.__class__.__name__
-            full_name.insert(0, name)
-            element = getattr(element, '_parent_container', None)
-        return '.'.join(full_name)
+    def _submit(self):
+        submit = getattr(self, 'submit', None)
+        if submit is None:
+            return
+        submit.click()
+        return
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self):
+        return
+
+    def set(self, data: dict, options: dict = None):
+        self.__enter__()
+        if options is None:
+            options = {}
+        errors = []
+        for name, value in data.items():
+            target_element = getattr(self, name, None)
+            if target_element is None or not isinstance(target_element, (BaseContainer, BaseElement)):
+                errors.append(f'{self._get_full_name()} Unknown attribute {name}')
+                continue
+            if not hasattr(target_element, 'set'):
+                errors.append(f'{self._get_full_name()} Attribute {name} is not settable')
+            result = target_element.set(value, options)
+            if result:
+                errors.append(result)
+        if options.get('submit', False):
+            self._submit()
+        return errors
 
 
 class BaseContainerElement(BaseElement, BaseContainer):
@@ -252,9 +266,12 @@ class BasePage(BaseContainer):
     base_url = None
     page_path = None
     title = None
+    driver = None
+    ac = None
 
     def __init__(self, driver):
         self.driver = driver
+        self.ac = ActionChain(instance=self)
 
     def _get_title(self):
         return self.driver.title
@@ -278,12 +295,3 @@ class BasePage(BaseContainer):
             if self.title != self._get_title():
                 return False
         return super()._is_not_visible()
-
-    # def _find_element(self, locator, time=10):
-    #     return WebDriverWait(self.driver, time).until(EC.presence_of_element_located(locator),
-    #                                                   message=f"Can't find element by locator {locator}")
-    #
-    # def _find_elements(self, locator, time=10):
-    #     return WebDriverWait(self.driver, time).until(EC.presence_of_all_elements_located(locator),
-    #                                                   message=f"Can't find elements by locator {locator}")
-
